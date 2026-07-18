@@ -1,0 +1,18 @@
+{
+  "name": "com.sipvlib.providers",
+  "version": "1.0.0",
+  "displayName": "SiPVLib Providers",
+  "description": "Editor window and registry for managing third-party providers (ad networks, storage backends) used by SiPVLib. Installs/removes provider packages via Package Manager and toggles the scripting defines that gate each provider's code, so unused SDKs never end up in a build.",
+  "unity": "6000.3",
+  "author": {
+    "name": "phajmvawnsix"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "sipvlib",
+    "providers"
+  ],
+  "dependencies": {
+    "com.sipvlib.debugging": "https://github.com/phajmvawnsix/com.sipvlib.debugging.git"
+  }
+}

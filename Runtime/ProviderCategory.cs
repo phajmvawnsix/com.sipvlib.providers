@@ -4,5 +4,6 @@ namespace SiPVLib.Providers
     {
         Ads,
         Storage,
+        Config,
     }
 }

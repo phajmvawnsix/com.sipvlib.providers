@@ -12,6 +12,9 @@ namespace SiPVLib.Providers.Editor
     public class ProviderManagerWindow : EditorWindow
     {
         private Vector2 _scroll;
+        private ProviderCategory[] _tabs;
+        private string[] _tabLabels;
+        private int _selectedTab;
 
         [MenuItem("SiPV/Providers")]
         public static void Open()
@@ -24,6 +27,7 @@ namespace SiPVLib.Providers.Editor
         private void OnEnable()
         {
             ProviderManagerService.Changed += Repaint;
+            RefreshTabs();
         }
 
         private void OnDisable()
@@ -31,30 +35,39 @@ namespace SiPVLib.Providers.Editor
             ProviderManagerService.Changed -= Repaint;
         }
 
+        private void RefreshTabs()
+        {
+            _tabs = System.Enum.GetValues(typeof(ProviderCategory))
+                .Cast<ProviderCategory>()
+                .Where(category => ProviderRegistry.All.Any(p => p.Category == category))
+                .ToArray();
+            _tabLabels = _tabs.Select(t => t.ToString()).ToArray();
+            _selectedTab = Mathf.Clamp(_selectedTab, 0, Mathf.Max(0, _tabs.Length - 1));
+        }
+
         private void OnGUI()
         {
+            if (_tabs == null) RefreshTabs();
+
             EditorGUILayout.HelpBox(
                 "Add a provider to install its package (where available) and enable its code. " +
                 "Removing a provider uninstalls its package and hides its code again via scripting " +
-                "defines.", MessageType.Info);
+                "defines. Each tab lists the providers supported by that module.", MessageType.Info);
+
+            if (_tabs.Length == 0) return;
+
+            _selectedTab = GUILayout.Toolbar(_selectedTab, _tabLabels);
 
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
-
-            foreach (var category in System.Enum.GetValues(typeof(ProviderCategory)).Cast<ProviderCategory>())
-            {
-                DrawCategory(category);
-            }
-
+            DrawCategory(_tabs[_selectedTab]);
             EditorGUILayout.EndScrollView();
         }
 
         private void DrawCategory(ProviderCategory category)
         {
             var providers = ProviderRegistry.All.Where(p => p.Category == category).ToArray();
-            if (providers.Length == 0) return;
 
             EditorGUILayout.Space(8);
-            EditorGUILayout.LabelField(category.ToString(), EditorStyles.boldLabel);
 
             foreach (var provider in providers)
             {

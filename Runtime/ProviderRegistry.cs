@@ -70,6 +70,22 @@ namespace SiPVLib.Providers
                                 "FIREBASE_FIRESTORE define that SiPV.UserData's StorageProviderFirestore " +
                                 "checks for.",
             },
+            new ProviderDefinition
+            {
+                Id = "firebase_remote_config",
+                DisplayName = "Firebase Remote Config",
+                Category = ProviderCategory.Config,
+                PackageId = null, // Firebase is consumed via Assets/Firebase asset-tree import in
+                                   // this project, not a standard UPM registry package, so a simple
+                                   // Package Manager add can't provision it reliably.
+                ScriptingDefineSymbol = "FIREBASE_REMOTE_CONFIG",
+                InstallNotes = "Requires manually importing the Firebase Remote Config and Auth SDK " +
+                                "modules (Firebase Unity SDK download + External Dependency Manager " +
+                                "resolution), since Firebase isn't installed via a standard UPM " +
+                                "registry in this project. Once imported, this toggle enables the " +
+                                "FIREBASE_REMOTE_CONFIG define that SiPV.Config's FirebaseRemoteConfigProvider " +
+                                "checks for.",
+            },
         };
 
         public static ProviderDefinition Find(string id)

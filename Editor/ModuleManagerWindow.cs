@@ -163,9 +163,8 @@ namespace SiPVLib.Providers.Editor
 
             string latestText;
             if (string.IsNullOrEmpty(module.GitUrl)) latestText = "n/a";
-            else if (ModuleRemoteInfoService.IsFetching(module)) latestText = "checking...";
-            else if (remoteVersion == null) latestText = "checking...";
-            else if (remoteVersion.Length == 0) latestText = "no releases";
+            else if (ModuleRemoteInfoService.IsFetching(module) || remoteVersion == null) latestText = "checking...";
+            else if (remoteVersion.Length == 0) latestText = "unavailable";
             else latestText = remoteVersion;
 
             EditorGUILayout.LabelField($"Latest: {latestText}", EditorStyles.miniLabel, GUILayout.Width(190));
@@ -190,8 +189,8 @@ namespace SiPVLib.Providers.Editor
                 .Select(d => d.DisplayName)
                 .ToArray();
 
-            var pinned = string.IsNullOrEmpty(remoteVersion) ? "the default branch" : remoteVersion;
-            var message = $"Add {module.DisplayName} ({pinned}) to Packages/manifest.json?";
+            var versionText = string.IsNullOrEmpty(remoteVersion) ? "" : $" {remoteVersion}";
+            var message = $"Add {module.DisplayName}{versionText} to Packages/manifest.json?";
             if (missingDeps.Length > 0)
             {
                 message += $"\n\nIts missing dependencies will be added too: {string.Join(", ", missingDeps)}.";
@@ -199,7 +198,7 @@ namespace SiPVLib.Providers.Editor
 
             if (EditorUtility.DisplayDialog("Install module", message, "Install", "Cancel"))
             {
-                ModuleManagerService.InstallModule(module, string.IsNullOrEmpty(remoteVersion) ? null : remoteVersion);
+                ModuleManagerService.InstallModule(module);
             }
         }
 
@@ -209,7 +208,7 @@ namespace SiPVLib.Providers.Editor
             if (EditorUtility.DisplayDialog("Update module",
                     $"Update {module.DisplayName} from {from} to {remoteVersion}?", "Update", "Cancel"))
             {
-                ModuleManagerService.UpdateModule(module, remoteVersion);
+                ModuleManagerService.UpdateModule(module);
             }
         }
     }

@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Text.RegularExpressions;
 using SiPVLib.Debugging;
 using UnityEditor;
@@ -9,23 +8,26 @@ using UnityEngine.Networking;
 namespace SiPVLib.Providers.Editor
 {
     /// <summary>
-    /// Fetches each module's latest published version (highest semver git tag) and that version's
-    /// CHANGELOG.md from GitHub. Everything is polled off <see cref="EditorApplication.update"/>
-    /// rather than awaited, so nothing here blocks the Editor's main thread.
+    /// Fetches each module's published version and CHANGELOG.md from GitHub. The version of record
+    /// is the <c>version</c> field of <c>package.json</c> on the default branch — SiPVLib packages
+    /// are consumed as git dependencies tracking that branch and are not necessarily tagged, so a
+    /// tag lookup would under-report (or miss entirely) the current release. Everything is polled
+    /// off <see cref="EditorApplication.update"/>, so nothing here blocks the Editor's main thread.
     /// </summary>
     [InitializeOnLoad]
     public static class ModuleRemoteInfoService
     {
         private const string RawContentBaseUrl = "https://raw.githubusercontent.com/phajmvawnsix/";
+        private const string DefaultBranch = "main";
 
-        private static readonly Regex TagPattern =
-            new(@"refs/tags/(?<tag>v?\d+\.\d+\.\d+)(?:\^\{\})?$", RegexOptions.Compiled | RegexOptions.Multiline);
+        private static readonly Regex VersionPattern =
+            new(@"""version""\s*:\s*""(?<version>[^""]+)""", RegexOptions.Compiled);
 
         private static readonly Dictionary<string, string> RemoteVersions = new();
         private static readonly Dictionary<string, string> Changelogs = new();
         private static readonly HashSet<string> InFlight = new();
 
-        private static readonly List<TagQuery> PendingTagQueries = new();
+        private static readonly List<VersionQuery> PendingVersionQueries = new();
         private static readonly List<ChangelogQuery> PendingChangelogQueries = new();
 
         public static event Action Changed;
@@ -38,8 +40,9 @@ namespace SiPVLib.Providers.Editor
         // ── Remote version ───────────────────────────────────────────────
 
         /// <summary>
-        /// Latest published version for a module, or null while unknown. The first call per module
-        /// kicks off a background <c>git ls-remote --tags</c>; <see cref="Changed"/> fires when it lands.
+        /// Published version for a module, or null while unknown. The first call per module kicks
+        /// off a fetch of <c>package.json</c> from the default branch; <see cref="Changed"/> fires
+        /// when it lands.
         /// </summary>
         public static string GetRemoteVersion(ModuleDefinition module)
         {
@@ -56,24 +59,12 @@ namespace SiPVLib.Providers.Editor
             if (string.IsNullOrEmpty(module.GitUrl)) return;
             if (RemoteVersions.ContainsKey(module.Id) || InFlight.Contains(module.Id)) return;
 
-            var startInfo = new ProcessStartInfo("git", $"ls-remote --tags \"{module.GitUrl}\"")
-            {
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-            };
+            var url = $"{RawContentBaseUrl}{module.Id}/{DefaultBranch}/package.json";
+            var request = UnityWebRequest.Get(url);
+            request.SendWebRequest();
 
-            try
-            {
-                var process = Process.Start(startInfo);
-                PendingTagQueries.Add(new TagQuery(module.Id, process));
-                InFlight.Add(module.Id);
-            }
-            catch (Exception e)
-            {
-                CustomLog.LogError($"[SiPV.Modules] Failed to query tags for {module.DisplayName}: {e.Message}");
-            }
+            PendingVersionQueries.Add(new VersionQuery(module.Id, request));
+            InFlight.Add(module.Id);
         }
 
         /// <summary>Drops all cached remote data so the next query re-fetches.</summary>
@@ -95,11 +86,7 @@ namespace SiPVLib.Providers.Editor
             if (Changelogs.ContainsKey(module.Id)) return;
             if (PendingChangelogQueries.Exists(q => q.ModuleId == module.Id)) return;
 
-            // Tags are published as either "1.2.0" or "v1.2.0"; the raw-content path needs whichever
-            // one actually exists, so fall back to the default branch when no tag is known yet.
-            var version = GetRemoteVersion(module);
-            var reference = string.IsNullOrEmpty(version) ? "main" : version;
-            var url = $"{RawContentBaseUrl}{module.Id}/{reference}/CHANGELOG.md";
+            var url = $"{RawContentBaseUrl}{module.Id}/{DefaultBranch}/CHANGELOG.md";
 
             var request = UnityWebRequest.Get(url);
             request.SendWebRequest();
@@ -110,31 +97,31 @@ namespace SiPVLib.Providers.Editor
 
         private static void Poll()
         {
-            PollTagQueries();
+            PollVersionQueries();
             PollChangelogQueries();
         }
 
-        private static void PollTagQueries()
+        private static void PollVersionQueries()
         {
-            if (PendingTagQueries.Count == 0) return;
+            if (PendingVersionQueries.Count == 0) return;
 
-            for (var i = PendingTagQueries.Count - 1; i >= 0; i--)
+            for (var i = PendingVersionQueries.Count - 1; i >= 0; i--)
             {
-                var query = PendingTagQueries[i];
-                if (!query.Process.HasExited) continue;
+                var query = PendingVersionQueries[i];
+                if (!query.Request.isDone) continue;
 
                 var version = string.Empty;
-                if (query.Process.ExitCode == 0)
+                if (query.Request.result == UnityWebRequest.Result.Success)
                 {
-                    version = ParseHighestTag(query.Process.StandardOutput.ReadToEnd());
+                    version = ParseVersion(query.Request.downloadHandler.text);
                 }
                 else
                 {
-                    CustomLog.LogWarning($"[SiPV.Modules] Could not read tags for {query.ModuleId}: {query.Process.StandardError.ReadToEnd()}");
+                    CustomLog.LogWarning($"[SiPV.Modules] Could not read package.json for {query.ModuleId}: {query.Request.error}");
                 }
 
-                query.Process.Dispose();
-                PendingTagQueries.RemoveAt(i);
+                query.Request.Dispose();
+                PendingVersionQueries.RemoveAt(i);
                 InFlight.Remove(query.ModuleId);
 
                 RemoteVersions[query.ModuleId] = version;
@@ -161,25 +148,11 @@ namespace SiPVLib.Providers.Editor
             }
         }
 
-        /// <summary>Picks the highest semver tag out of <c>git ls-remote --tags</c> output.</summary>
-        private static string ParseHighestTag(string lsRemoteOutput)
+        /// <summary>Reads the <c>version</c> field out of a package.json payload.</summary>
+        private static string ParseVersion(string packageJson)
         {
-            string best = null;
-            var bestParsed = new Version(0, 0, 0);
-
-            foreach (Match match in TagPattern.Matches(lsRemoteOutput))
-            {
-                var tag = match.Groups["tag"].Value;
-                var numeric = tag.TrimStart('v');
-
-                if (!Version.TryParse(numeric, out var parsed)) continue;
-                if (best != null && parsed <= bestParsed) continue;
-
-                best = tag;
-                bestParsed = parsed;
-            }
-
-            return best ?? string.Empty;
+            var match = VersionPattern.Match(packageJson);
+            return match.Success ? match.Groups["version"].Value : string.Empty;
         }
 
         /// <summary>Compares two version strings, tolerating a leading "v" and unparseable input.</summary>
@@ -193,15 +166,15 @@ namespace SiPVLib.Providers.Editor
                    && candidateVersion > currentVersion;
         }
 
-        private class TagQuery
+        private class VersionQuery
         {
             public readonly string ModuleId;
-            public readonly Process Process;
+            public readonly UnityWebRequest Request;
 
-            public TagQuery(string moduleId, Process process)
+            public VersionQuery(string moduleId, UnityWebRequest request)
             {
                 ModuleId = moduleId;
-                Process = process;
+                Request = request;
             }
         }
 

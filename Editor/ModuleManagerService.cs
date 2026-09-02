@@ -98,27 +98,29 @@ namespace SiPVLib.Providers.Editor
 
         /// <summary>
         /// Adds this module and any not-yet-installed dependencies to the manifest, foundation
-        /// packages first. Pins to <paramref name="version"/> when given, else tracks the default branch.
+        /// packages first. Entries track the repo's default branch: SiPVLib packages publish by
+        /// bumping <c>package.json</c> on that branch rather than by tagging, so there is no release
+        /// ref to pin to.
         /// </summary>
-        public static void InstallModule(ModuleDefinition module, string version = null)
+        public static void InstallModule(ModuleDefinition module)
         {
             foreach (var toInstall in ResolveInstallOrder(module))
             {
                 if (IsModuleInstalled(toInstall) || IsBusy(toInstall)) continue;
 
-                // Only the explicitly requested module gets pinned; dependencies track their default
-                // branch, since a version valid for one package says nothing about another's tags.
-                var pinned = ReferenceEquals(toInstall, module) ? version : null;
-                AddToManifest(toInstall, pinned);
+                AddToManifest(toInstall);
             }
         }
 
-        /// <summary>Re-points the manifest entry at <paramref name="version"/> (or the default branch).</summary>
-        public static void UpdateModule(ModuleDefinition module, string version = null)
+        /// <summary>
+        /// Re-resolves the module's git dependency so Package Manager picks up the newest commit on
+        /// the default branch (it otherwise stays on the commit recorded in packages-lock.json).
+        /// </summary>
+        public static void UpdateModule(ModuleDefinition module)
         {
             if (!IsModuleInstalled(module) || IsBusy(module)) return;
 
-            AddToManifest(module, version);
+            AddToManifest(module);
         }
 
         public static void RemoveModule(ModuleDefinition module)
@@ -141,7 +143,7 @@ namespace SiPVLib.Providers.Editor
             Track(module.Id, Client.Remove(module.Id));
         }
 
-        private static void AddToManifest(ModuleDefinition module, string version)
+        private static void AddToManifest(ModuleDefinition module)
         {
             if (string.IsNullOrEmpty(module.GitUrl))
             {
@@ -149,9 +151,8 @@ namespace SiPVLib.Providers.Editor
                 return;
             }
 
-            var url = ModuleManifest.BuildGitUrl(module, version);
-            CustomLog.Log($"[SiPV.Modules] Adding {module.DisplayName} ({url})...");
-            Track(module.Id, Client.Add(url));
+            CustomLog.Log($"[SiPV.Modules] Adding {module.DisplayName} ({module.GitUrl})...");
+            Track(module.Id, Client.Add(module.GitUrl));
         }
 
         // ── Install ordering ─────────────────────────────────────────────

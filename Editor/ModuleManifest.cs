@@ -81,19 +81,16 @@ namespace SiPVLib.Providers.Editor
             return null;
         }
 
-        /// <summary>The version/tag a git dependency is pinned to, or null when it tracks the default branch.</summary>
+        /// <summary>
+        /// The tag/branch a git dependency is pinned to, or null when it tracks the default branch.
+        /// The Modules window doesn't pin, but a hand-edited manifest may.
+        /// </summary>
         public static string GetPinnedFragment(string manifestValue)
         {
             if (string.IsNullOrEmpty(manifestValue)) return null;
 
             var match = GitFragmentPattern.Match(manifestValue);
             return match.Success ? match.Groups["fragment"].Value : null;
-        }
-
-        /// <summary>Builds the manifest value for a module, optionally pinned to <paramref name="version"/>.</summary>
-        public static string BuildGitUrl(ModuleDefinition module, string version = null)
-        {
-            return string.IsNullOrEmpty(version) ? module.GitUrl : $"{module.GitUrl}#{version}";
         }
     }
 }

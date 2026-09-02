@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.3.1] - 2026-09-03
+
+Fix the Modules window reporting a stale (or missing) "Latest" version and never offering an update.
+Remote versions were read from git tags, but SiPVLib packages publish by bumping `package.json` on
+the default branch and are not tagged at all — so the lookup always came back empty or behind. The
+published version is now read from `package.json` on the default branch, and the changelog is
+fetched from that same ref instead of a tag that doesn't exist.
+
+Install/Update no longer append a `#<version>` fragment for the same reason: there is no release ref
+to pin to, so entries track the default branch and Update simply re-resolves the dependency to pick
+up the newest commit.
+
 ## [1.3.0] - 2026-09-02
 
 The Modules window now manages SiPVLib packages as UPM git dependencies in

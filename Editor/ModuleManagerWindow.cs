@@ -23,6 +23,10 @@ namespace SiPVLib.Providers.Editor
         private void OnEnable()
         {
             ModuleManagerService.Changed += Repaint;
+
+            // Modules can appear/disappear outside this window (clone-packages.sh, a manual clone,
+            // a git pull), so re-check the filesystem whenever the window is opened/refocused.
+            ModuleManagerService.InvalidateCache();
         }
 
         private void OnDisable()
@@ -36,6 +40,14 @@ namespace SiPVLib.Providers.Editor
                 "Install a module to clone it (and any missing dependencies) into Assets/SiPVLib. " +
                 "Update pulls the latest commit on the module's current branch. Remove deletes the " +
                 "folder and refuses if another installed module still depends on it.", MessageType.Info);
+
+            EditorGUILayout.BeginHorizontal();
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button("Refresh", GUILayout.Width(80)))
+            {
+                ModuleManagerService.InvalidateCache();
+            }
+            EditorGUILayout.EndHorizontal();
 
             EditorGUILayout.Space(8);
 

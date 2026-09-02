@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.1] - 2026-09-02
+
+Editor performance fixes:
+
+- `ProviderManagerService.GetInstalledPackageIds` blocked the main thread on a
+  `while (!request.IsCompleted) Thread.Sleep(10)` loop, reached from `OnGUI`. Since `InvalidateCache`
+  nulls the cache after every package operation, the next repaint froze the Editor until Package
+  Manager answered. The `ListRequest` is now polled alongside the other pending requests; the window
+  shows "Checking..." and disables its actions until the listing lands.
+- `ModuleManagerService.IsModuleInstalled` hit `Directory.Exists` several times per module per
+  repaint. Now cached, invalidated on install/remove, on window enable, and via a new Refresh button.
+
 ## [1.2.0] - 2026-09-02
 
 Add **SiPV > Modules** window (`ModuleManagerWindow`/`ModuleManagerService`/`ModuleRegistry`/`ModuleDefinition`):

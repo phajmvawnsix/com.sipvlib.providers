@@ -18,6 +18,13 @@ namespace SiPVLib.Providers.Editor
     {
         private static readonly List<ModuleOperation> PendingOperations = new();
 
+        /// <summary>
+        /// Installed-state cache. <see cref="IsModuleInstalled"/> is called several times per module
+        /// per window repaint, so the underlying <see cref="Directory.Exists"/> is cached and only
+        /// invalidated when this service changes something (or the user asks for a refresh).
+        /// </summary>
+        private static Dictionary<string, bool> _installedCache;
+
         public static event Action Changed;
 
         static ModuleManagerService()
@@ -33,8 +40,23 @@ namespace SiPVLib.Providers.Editor
         public static string GetModulePath(ModuleDefinition module) =>
             Path.Combine(ModulesRootPath, module.Id);
 
-        public static bool IsModuleInstalled(ModuleDefinition module) =>
-            Directory.Exists(GetModulePath(module));
+        public static bool IsModuleInstalled(ModuleDefinition module)
+        {
+            _installedCache ??= new Dictionary<string, bool>();
+
+            if (_installedCache.TryGetValue(module.Id, out var installed)) return installed;
+
+            installed = Directory.Exists(GetModulePath(module));
+            _installedCache[module.Id] = installed;
+            return installed;
+        }
+
+        /// <summary>Drops the installed-state cache so the next query hits the filesystem again.</summary>
+        public static void InvalidateCache()
+        {
+            _installedCache = null;
+            Changed?.Invoke();
+        }
 
         public static bool IsBusy(ModuleDefinition module) =>
             PendingOperations.Any(op => op.ModuleId == module.Id);
@@ -99,7 +121,7 @@ namespace SiPVLib.Providers.Editor
 
             CustomLog.Log($"[SiPV.Modules] Removed {module.DisplayName}.");
             AssetDatabase.Refresh();
-            Changed?.Invoke();
+            InvalidateCache();
         }
 
         // ── Install ordering ────────────────────────────────────────────
@@ -144,6 +166,7 @@ namespace SiPVLib.Providers.Editor
                     ? $"[SiPV.Modules] Installed {module.DisplayName}."
                     : $"[SiPV.Modules] Failed to install {module.DisplayName}. See console for git output.");
                 AssetDatabase.Refresh();
+                InvalidateCache();
             });
         }
 

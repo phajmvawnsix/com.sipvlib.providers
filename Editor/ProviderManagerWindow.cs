@@ -56,6 +56,11 @@ namespace SiPVLib.Providers.Editor
 
             if (_tabs.Length == 0) return;
 
+            if (ProviderManagerService.IsRefreshingPackages)
+            {
+                EditorGUILayout.HelpBox("Reading installed packages...", MessageType.None);
+            }
+
             _selectedTab = GUILayout.Toolbar(_selectedTab, _tabLabels);
 
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
@@ -83,12 +88,15 @@ namespace SiPVLib.Providers.Editor
             EditorGUILayout.BeginVertical(EditorStyles.helpBox);
             EditorGUILayout.BeginHorizontal();
 
-            var statusLabel = installed ? "Installed" : "Not installed";
+            var refreshing = ProviderManagerService.IsRefreshingPackages;
+            var statusLabel = refreshing ? "Checking..." : installed ? "Installed" : "Not installed";
             EditorGUILayout.LabelField($"{provider.DisplayName}  —  {statusLabel}", EditorStyles.boldLabel);
 
             GUILayout.FlexibleSpace();
 
-            using (new EditorGUI.DisabledScope(!installed && !dependenciesSatisfied))
+            // Installed-state is unknown until the package listing lands, so don't let the user act
+            // on a provisional "Not installed".
+            using (new EditorGUI.DisabledScope(refreshing || (!installed && !dependenciesSatisfied)))
             {
                 if (!installed)
                 {

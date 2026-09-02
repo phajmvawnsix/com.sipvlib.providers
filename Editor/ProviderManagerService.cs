@@ -18,7 +18,9 @@ namespace SiPVLib.Providers.Editor
     public static class ProviderManagerService
     {
         private static readonly List<Request> PendingRequests = new();
+        private static readonly HashSet<string> EmptyPackageIds = new();
         private static HashSet<string> _installedPackageIdsCache;
+        private static ListRequest _pendingListRequest;
 
         public static event Action Changed;
 
@@ -132,26 +134,49 @@ namespace SiPVLib.Providers.Editor
 
         // ── Package cache ────────────────────────────────────────────
 
+        /// <summary>
+        /// Returns the installed package ids, or an empty set while the first (or a refreshed)
+        /// Package Manager listing is still in flight. Reached from OnGUI, so this never blocks the
+        /// main thread: the pending <see cref="ListRequest"/> is polled in <see cref="PollPendingRequests"/>
+        /// and <see cref="Changed"/> fires to repaint once it lands.
+        /// </summary>
         private static HashSet<string> GetInstalledPackageIds()
         {
             if (_installedPackageIdsCache != null) return _installedPackageIdsCache;
 
-            _installedPackageIdsCache = new HashSet<string>();
-            var listRequest = Client.List(true);
-            while (!listRequest.IsCompleted)
+            if (_pendingListRequest == null)
             {
-                System.Threading.Thread.Sleep(10);
+                _pendingListRequest = Client.List(true);
             }
 
-            if (listRequest.Status == StatusCode.Success)
+            return EmptyPackageIds;
+        }
+
+        /// <summary>True while the package listing hasn't resolved yet; lets the UI say so.</summary>
+        public static bool IsRefreshingPackages => _installedPackageIdsCache == null;
+
+        private static void PollListRequest()
+        {
+            if (_pendingListRequest == null || !_pendingListRequest.IsCompleted) return;
+
+            var completed = _pendingListRequest;
+            _pendingListRequest = null;
+
+            var ids = new HashSet<string>();
+            if (completed.Status == StatusCode.Success)
             {
-                foreach (var package in listRequest.Result)
+                foreach (var package in completed.Result)
                 {
-                    _installedPackageIdsCache.Add(package.name);
+                    ids.Add(package.name);
                 }
             }
+            else
+            {
+                CustomLog.LogError($"[SiPV.Providers] Failed to list packages: {completed.Error?.message}");
+            }
 
-            return _installedPackageIdsCache;
+            _installedPackageIdsCache = ids;
+            Changed?.Invoke();
         }
 
         private static void InvalidateCache()
@@ -169,6 +194,8 @@ namespace SiPVLib.Providers.Editor
 
         private static void PollPendingRequests()
         {
+            PollListRequest();
+
             if (PendingRequests.Count == 0) return;
 
             for (var i = PendingRequests.Count - 1; i >= 0; i--)

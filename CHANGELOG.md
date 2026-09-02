@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.3.0] - 2026-09-02
+
+The Modules window now manages SiPVLib packages as UPM git dependencies in
+`Packages/manifest.json` rather than as folders under `Assets/SiPVLib` — the manifest is how a
+consuming project actually pulls SiPVLib in, and `Assets/SiPVLib` only exists in the bootstrap
+project. Install/Update/Remove go through Package Manager (`Client.Add`/`Client.Remove`) instead of
+shelling out to `git clone`.
+
+Each row now shows the installed version alongside the latest published GitHub release, flags when
+an update is available, and offers a **Changelog** button that fetches that release's `CHANGELOG.md`
+from GitHub. Remote versions come from `git ls-remote --tags` (highest semver wins) and changelogs
+from raw.githubusercontent.com; both are fetched off `EditorApplication.update` so neither blocks
+the Editor.
+
 ## [1.2.1] - 2026-09-02
 
 Editor performance fixes:

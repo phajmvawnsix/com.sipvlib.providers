@@ -1,65 +1,79 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
 using System.Linq;
 using SiPVLib.Debugging;
 using UnityEditor;
+using UnityEditor.PackageManager;
+using UnityEditor.PackageManager.Requests;
 
 namespace SiPVLib.Providers.Editor
 {
     /// <summary>
-    /// Installs/updates/removes SiPVLib packages (<c>Assets/SiPVLib/&lt;module-id&gt;</c>) by shelling
-    /// out to <c>git</c> directly, since these are independent git repos cloned into the project, not
-    /// UPM registry packages resolvable via Package Manager's <c>Client</c> API.
+    /// Installs/updates/removes SiPVLib packages as UPM git dependencies in the project's
+    /// <c>Packages/manifest.json</c>, via Package Manager. A consuming project pulls SiPVLib in
+    /// through the manifest, so the manifest — not any folder under Assets — decides what's installed.
     /// </summary>
     [InitializeOnLoad]
     public static class ModuleManagerService
     {
         private static readonly List<ModuleOperation> PendingOperations = new();
 
-        /// <summary>
-        /// Installed-state cache. <see cref="IsModuleInstalled"/> is called several times per module
-        /// per window repaint, so the underlying <see cref="Directory.Exists"/> is cached and only
-        /// invalidated when this service changes something (or the user asks for a refresh).
-        /// </summary>
-        private static Dictionary<string, bool> _installedCache;
+        /// <summary>Manifest dependency map, re-read only when invalidated (the window queries per repaint).</summary>
+        private static Dictionary<string, string> _manifestCache;
+
+        /// <summary>Resolved package versions from Package Manager, keyed by package id.</summary>
+        private static Dictionary<string, string> _installedVersions;
+        private static ListRequest _pendingListRequest;
 
         public static event Action Changed;
 
         static ModuleManagerService()
         {
-            EditorApplication.update += PollPendingOperations;
+            EditorApplication.update += PollPendingRequests;
         }
 
-        // ── Paths / status ──────────────────────────────────────────────
+        // ── Status ───────────────────────────────────────────────────────
 
-        private static string ModulesRootPath =>
-            Path.Combine(UnityEngine.Application.dataPath, "SiPVLib");
+        private static Dictionary<string, string> Manifest =>
+            _manifestCache ??= ModuleManifest.ReadDependencies();
 
-        public static string GetModulePath(ModuleDefinition module) =>
-            Path.Combine(ModulesRootPath, module.Id);
-
-        public static bool IsModuleInstalled(ModuleDefinition module)
-        {
-            _installedCache ??= new Dictionary<string, bool>();
-
-            if (_installedCache.TryGetValue(module.Id, out var installed)) return installed;
-
-            installed = Directory.Exists(GetModulePath(module));
-            _installedCache[module.Id] = installed;
-            return installed;
-        }
-
-        /// <summary>Drops the installed-state cache so the next query hits the filesystem again.</summary>
-        public static void InvalidateCache()
-        {
-            _installedCache = null;
-            Changed?.Invoke();
-        }
+        public static bool IsModuleInstalled(ModuleDefinition module) =>
+            Manifest.ContainsKey(module.Id);
 
         public static bool IsBusy(ModuleDefinition module) =>
             PendingOperations.Any(op => op.ModuleId == module.Id);
+
+        /// <summary>The manifest value (git URL, possibly <c>#tag</c>-pinned) for an installed module.</summary>
+        public static string GetManifestEntry(ModuleDefinition module) =>
+            Manifest.GetValueOrDefault(module.Id);
+
+        /// <summary>
+        /// The module's currently installed version: the resolved package version where Package
+        /// Manager has reported one, otherwise the <c>#tag</c> the manifest pins, otherwise null
+        /// (installed but tracking the default branch, with the listing still in flight).
+        /// </summary>
+        public static string GetLocalVersion(ModuleDefinition module)
+        {
+            if (!IsModuleInstalled(module)) return null;
+
+            EnsureVersionsRequested();
+
+            if (_installedVersions != null && _installedVersions.TryGetValue(module.Id, out var resolved))
+            {
+                return resolved;
+            }
+
+            return ModuleManifest.GetPinnedFragment(GetManifestEntry(module));
+        }
+
+        public static bool IsResolvingVersions => _installedVersions == null;
+
+        private static void EnsureVersionsRequested()
+        {
+            if (_installedVersions != null || _pendingListRequest != null) return;
+
+            _pendingListRequest = Client.List(true);
+        }
 
         public static bool AreDependenciesInstallable(ModuleDefinition module)
         {
@@ -72,31 +86,41 @@ namespace SiPVLib.Providers.Editor
             return true;
         }
 
+        /// <summary>Drops cached manifest/version state so the next query re-reads it.</summary>
+        public static void InvalidateCache()
+        {
+            _manifestCache = null;
+            _installedVersions = null;
+            Changed?.Invoke();
+        }
+
         // ── Actions ──────────────────────────────────────────────────────
 
-        /// <summary>Installs this module and any missing dependencies, closest-to-foundation first.</summary>
-        public static void InstallModule(ModuleDefinition module)
+        /// <summary>
+        /// Adds this module and any not-yet-installed dependencies to the manifest, foundation
+        /// packages first. Pins to <paramref name="version"/> when given, else tracks the default branch.
+        /// </summary>
+        public static void InstallModule(ModuleDefinition module, string version = null)
         {
             foreach (var toInstall in ResolveInstallOrder(module))
             {
-                InstallSingle(toInstall);
+                if (IsModuleInstalled(toInstall) || IsBusy(toInstall)) continue;
+
+                // Only the explicitly requested module gets pinned; dependencies track their default
+                // branch, since a version valid for one package says nothing about another's tags.
+                var pinned = ReferenceEquals(toInstall, module) ? version : null;
+                AddToManifest(toInstall, pinned);
             }
         }
 
-        public static void UpdateModule(ModuleDefinition module)
+        /// <summary>Re-points the manifest entry at <paramref name="version"/> (or the default branch).</summary>
+        public static void UpdateModule(ModuleDefinition module, string version = null)
         {
             if (!IsModuleInstalled(module) || IsBusy(module)) return;
 
-            RunGit(module.Id, "pull", GetModulePath(module), success =>
-            {
-                CustomLog.Log(success
-                    ? $"[SiPV.Modules] Updated {module.DisplayName}."
-                    : $"[SiPV.Modules] Failed to update {module.DisplayName}. See console for git output.");
-                AssetDatabase.Refresh();
-            });
+            AddToManifest(module, version);
         }
 
-        /// <summary>Deletes the module's folder. Refuses if another installed module still depends on it.</summary>
         public static void RemoveModule(ModuleDefinition module)
         {
             if (!IsModuleInstalled(module) || IsBusy(module)) return;
@@ -113,18 +137,24 @@ namespace SiPVLib.Providers.Editor
                 return;
             }
 
-            var path = GetModulePath(module);
-            Directory.Delete(path, true);
-
-            var metaPath = path + ".meta";
-            if (File.Exists(metaPath)) File.Delete(metaPath);
-
-            CustomLog.Log($"[SiPV.Modules] Removed {module.DisplayName}.");
-            AssetDatabase.Refresh();
-            InvalidateCache();
+            CustomLog.Log($"[SiPV.Modules] Removing {module.DisplayName}...");
+            Track(module.Id, Client.Remove(module.Id));
         }
 
-        // ── Install ordering ────────────────────────────────────────────
+        private static void AddToManifest(ModuleDefinition module, string version)
+        {
+            if (string.IsNullOrEmpty(module.GitUrl))
+            {
+                CustomLog.LogError($"[SiPV.Modules] {module.DisplayName} has no git URL; add it to the manifest manually.");
+                return;
+            }
+
+            var url = ModuleManifest.BuildGitUrl(module, version);
+            CustomLog.Log($"[SiPV.Modules] Adding {module.DisplayName} ({url})...");
+            Track(module.Id, Client.Add(url));
+        }
+
+        // ── Install ordering ─────────────────────────────────────────────
 
         private static List<ModuleDefinition> ResolveInstallOrder(ModuleDefinition module)
         {
@@ -147,92 +177,68 @@ namespace SiPVLib.Providers.Editor
             }
         }
 
-        private static void InstallSingle(ModuleDefinition module)
+        // ── Request polling ──────────────────────────────────────────────
+
+        private static void Track(string moduleId, Request request)
         {
-            if (IsModuleInstalled(module) || IsBusy(module)) return;
-
-            if (string.IsNullOrEmpty(module.GitUrl))
-            {
-                CustomLog.LogError($"[SiPV.Modules] {module.DisplayName} has no git URL; install it manually.");
-                return;
-            }
-
-            Directory.CreateDirectory(ModulesRootPath);
-            var arguments = $"clone \"{module.GitUrl}\" \"{GetModulePath(module)}\"";
-
-            RunGit(module.Id, arguments, ModulesRootPath, success =>
-            {
-                CustomLog.Log(success
-                    ? $"[SiPV.Modules] Installed {module.DisplayName}."
-                    : $"[SiPV.Modules] Failed to install {module.DisplayName}. See console for git output.");
-                AssetDatabase.Refresh();
-                InvalidateCache();
-            });
-        }
-
-        // ── git process handling ────────────────────────────────────────
-
-        private static void RunGit(string moduleId, string arguments, string workingDirectory, Action<bool> onComplete)
-        {
-            var startInfo = new ProcessStartInfo("git", arguments)
-            {
-                WorkingDirectory = workingDirectory,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-            };
-
-            Process process;
-            try
-            {
-                process = Process.Start(startInfo);
-            }
-            catch (Exception e)
-            {
-                CustomLog.LogError($"[SiPV.Modules] Failed to start git: {e.Message}");
-                onComplete?.Invoke(false);
-                return;
-            }
-
-            PendingOperations.Add(new ModuleOperation(moduleId, process, onComplete));
+            PendingOperations.Add(new ModuleOperation(moduleId, request));
             Changed?.Invoke();
         }
 
-        private static void PollPendingOperations()
+        private static void PollPendingRequests()
         {
+            PollListRequest();
+
             if (PendingOperations.Count == 0) return;
 
             for (var i = PendingOperations.Count - 1; i >= 0; i--)
             {
                 var operation = PendingOperations[i];
-                if (!operation.Process.HasExited) continue;
+                if (!operation.Request.IsCompleted) continue;
 
-                var success = operation.Process.ExitCode == 0;
-                if (!success)
+                if (operation.Request.Status == StatusCode.Failure)
                 {
-                    var error = operation.Process.StandardError.ReadToEnd();
-                    CustomLog.LogError($"[SiPV.Modules] git failed for {operation.ModuleId}: {error}");
+                    CustomLog.LogError($"[SiPV.Modules] Package Manager request failed for {operation.ModuleId}: {operation.Request.Error?.message}");
                 }
 
-                operation.Process.Dispose();
                 PendingOperations.RemoveAt(i);
-                operation.OnComplete?.Invoke(success);
-                Changed?.Invoke();
+                InvalidateCache();
             }
+        }
+
+        private static void PollListRequest()
+        {
+            if (_pendingListRequest == null || !_pendingListRequest.IsCompleted) return;
+
+            var completed = _pendingListRequest;
+            _pendingListRequest = null;
+
+            var versions = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (completed.Status == StatusCode.Success)
+            {
+                foreach (var package in completed.Result)
+                {
+                    versions[package.name] = package.version;
+                }
+            }
+            else
+            {
+                CustomLog.LogError($"[SiPV.Modules] Failed to list packages: {completed.Error?.message}");
+            }
+
+            _installedVersions = versions;
+            Changed?.Invoke();
         }
 
         private class ModuleOperation
         {
             public readonly string ModuleId;
-            public readonly Process Process;
-            public readonly Action<bool> OnComplete;
+            public readonly Request Request;
 
-            public ModuleOperation(string moduleId, Process process, Action<bool> onComplete)
+            public ModuleOperation(string moduleId, Request request)
             {
                 ModuleId = moduleId;
-                Process = process;
-                OnComplete = onComplete;
+                Request = request;
             }
         }
     }

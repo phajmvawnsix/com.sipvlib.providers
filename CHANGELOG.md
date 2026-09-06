@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.3.2] - 2026-09-03
+
+Lower minimum Unity Editor version to 2022.3 LTS (was 6000.3) and add a `repository`
+field to `package.json`, both required for OpenUPM registry submission.
+
 ## [1.3.1] - 2026-09-03
 
 Fix the Modules window reporting a stale (or missing) "Latest" version and never offering an update.
